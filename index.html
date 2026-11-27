@@ -137,7 +137,7 @@ input[type=range]{width:100%;accent-color:var(--red);min-height:32px}
    <button class="btn ghost sm" data-go="set">Einstellungen</button>
   </div>
  </div>
- <p class="tip">Halt das Handy flach wie ein Skateboard, Display nach oben. Am besten erst mal über Bett oder Sofa üben.</p>
+ <p class="tip">Halt das Handy flach wie ein Skateboard, Display nach oben. Punkte gibt's nur, wenn du es wieder genauso fängst. Am besten erst mal über Bett oder Sofa üben.</p>
 </div></section>
 
 <section id="play" class="screen"><div class="wrap">
@@ -188,6 +188,8 @@ input[type=range]{width:100%;accent-color:var(--red);min-height:32px}
   <label class="f">Dein Name<input type="text" id="sName" maxlength="16" autocomplete="off"></label>
   <div class="tg">Stance<div class="seg" id="sStance"><button data-v="1">Regular</button><button data-v="-1">Goofy</button></div></div>
   <p class="hint">Goofy tauscht Kick/Heel und Frontside/Backside, falls die Richtung bei dir falsch rum erkannt wird.</p>
+  <div class="tg">Landung<div class="seg" id="sStrict"><button data-v="1">Pflicht</button><button data-v="0">Egal</button></div></div>
+  <p class="hint">Pflicht: Nur wer das Handy in derselben Lage fängt, wie er es geworfen hat, kriegt Punkte. Sonst Bail – und die Combo ist weg.</p>
   <div class="tg">Trick-Ansage<div class="seg" id="sVoice"><button data-v="1">An</button><button data-v="0">Aus</button></div></div>
   <div class="tg">Sounds<div class="seg" id="sSound"><button data-v="1">An</button><button data-v="0">Aus</button></div></div>
  </div>
@@ -215,7 +217,7 @@ const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'
 const fmt=n=>Math.round(n).toLocaleString('de-DE');
 const dec=(n,d=2)=>n.toFixed(d).replace('.',',');
 const store={get(k,d){try{const v=localStorage.getItem('flippro.'+k);return v?JSON.parse(v):d}catch(e){return d}},set(k,v){try{localStorage.setItem('flippro.'+k,JSON.stringify(v))}catch(e){}}};
-const cfg=Object.assign({name:'Spieler 1',stance:1,voice:true,sound:true,freeA:4,catchA:13,debug:false},store.get('cfg',{}));
+const cfg=Object.assign({name:'Spieler 1',stance:1,voice:true,sound:true,freeA:4,catchA:13,debug:false,strict:true},store.get('cfg',{}));
 const saveCfg=()=>store.set('cfg',cfg);
 let rec=Object.assign({best:null,combo:null,air:0,rot:0,total:0},store.get('rec',{}));
 let runs=store.get('runs',[]);let dex=store.get('dex',{});
@@ -241,7 +243,7 @@ function rmat(q){const[w,x,y,z]=q;return[[1-2*(y*y+z*z),2*(x*y-w*z),2*(x*z+w*y)]
 function css(q){const r=rmat(q),s=[1,-1,1],m=(i,j)=>(r[i][j]*s[i]*s[j]).toFixed(4);return`matrix3d(${m(0,0)},${m(1,0)},${m(2,0)},0,${m(0,1)},${m(1,1)},${m(2,1)},0,${m(0,2)},${m(1,2)},${m(2,2)},0,0,0,0,1)`}
 
 /* ---------- Trick-Erkennung ---------- */
-const D={st:'ground',armed:false,lastT:0,g:[0,0,-9.81],buf:[],low:0,air:null,coolT:0,cg:[0,0,0],cn:0,a:0,w:0,got:false,peak:0};
+const D={st:'ground',armed:false,lastT:0,g:[0,0,-9.81],buf:[],low:0,air:null,coolT:0,cg:[0,0,0],cn:0,cw:0,cwn:0,a:0,w:0,got:false,peak:0,lastDot:null,lastW:null};
 let sensorsOn=false;
 async function enableSensors(){
  if(sensorsOn)return true;
@@ -275,7 +277,8 @@ function process(t,ax,ay,az,wx,wy,wz){
  }else if(D.st==='cool'){
   if(am>7&&am<12.5){D.cg[0]+=ax;D.cg[1]+=ay;D.cg[2]+=az;D.cn++}
   if(am>D.peak)D.peak=am;
-  if(t-D.coolT>.35)finish();
+  if(t-D.coolT>.15){D.cw+=wm;D.cwn++}
+  if(t-D.coolT>.5)finish();
  }
 }
 function takeoff(){
@@ -284,13 +287,17 @@ function takeoff(){
  for(const b of D.buf)if(b.t>=D.low-.08)integ(D.air,b.dt,b.wx,b.wy,b.wz,b.t);
  D.buf=[];sfx.up();setStatus('In der Luft …');
 }
-function land(t){D.air.T=t-D.air.t0;D.st='cool';D.coolT=t;D.cg=[0,0,0];D.cn=0}
+function land(t){D.air.T=t-D.air.t0;D.st='cool';D.coolT=t;D.cg=[0,0,0];D.cn=0;D.cw=0;D.cwn=0}
 function finish(){
  const A=D.air;D.st='ground';D.low=0;D.air=null;
  if(!A||A.T<MIN_AIR){setStatus(readyText());return}
- let clean=false;
- if(D.cn>3){const e=D.cg.map(v=>v/D.cn),ne=Math.hypot(...e),n0=Math.hypot(...A.g0);clean=(e[0]*A.g0[0]+e[1]*A.g0[1]+e[2]*A.g0[2])/(ne*n0)>.85}
- onTrick(classify(A,clean));
+ // Gelandet = in derselben Lage gefangen wie geworfen (Schwerkraft-Richtung vorher/nachher)
+ let dot=null;
+ if(D.cn>3){const e=D.cg.map(v=>v/D.cn),ne=Math.hypot(...e),n0=Math.hypot(...A.g0);dot=(e[0]*A.g0[0]+e[1]*A.g0[1]+e[2]*A.g0[2])/(ne*n0)}
+ // Liegt das Handy danach komplett still (Bett/Boden), wurde es nicht gefangen – eine Hand zittert immer etwas
+ const still=D.cwn>5?D.cw/D.cwn:null;
+ D.lastDot=dot;D.lastW=still;
+ onTrick(classify(A,dot,still));
 }
 const PRE=['','','Double ','Triple ','Quad ','Quint '];
 const P=n=>n>=2?(PRE[n]||n+'x '):'';
@@ -307,21 +314,26 @@ function trickName(f,t,h,kick,fs,front){
  if(h>=4)return deg+' Pizza Spin';
  return(fs?'FS ':'BS ')+deg+' Shove-it';
 }
-function classify(A,clean){
+function classify(A,dot,still){
  const s=cfg.stance,ax=A.ang[0],ay=A.ang[1]*s,az=A.ang[2]*s;
  const f=Math.floor((Math.abs(ay)+100)/360),t=Math.floor((Math.abs(ax)+100)/360),h=Math.floor((Math.abs(az)+50)/180);
  const name=trickName(f,t,h,ay>0,az>0,ax>0);
  const rot=Math.round(Math.abs(ax)+Math.abs(ay)+Math.abs(az));
  let pts=0;
- if(name!=='Toss'){const axes=(f>0)+(t>0)+(h>0);pts=(f*100+t*120+h*45)*(axes===3?2.2:axes===2?1.5:1)+A.T*120;if(clean)pts*=1.25;pts=Math.round(pts/5)*5}
- return{name,pts,air:A.T,height:9.81*A.T*A.T/8,rot,clean:clean&&name!=='Toss',frames:A.frames,T:A.T,sim:!!A.sim};
+ if(name!=='Toss'){const axes=(f>0)+(t>0)+(h>0);pts=(f*100+t*120+h*45)*(axes===3?2.2:axes===2?1.5:1)+A.T*120;}
+ let landed=true,why='';
+ if(still!=null&&still<1.5){landed=false;why='nicht gefangen'}
+ else if(dot!=null&&dot<.8){landed=false;why=dot<-.5?'falsch rum gefangen':'schief gefangen'}
+ const perfect=landed&&dot!=null&&dot>.97&&name!=='Toss';
+ if(perfect)pts*=1.2;pts=Math.round(pts/5)*5;
+ return{name,pts,air:A.T,height:9.81*A.T*A.T/8,rot,landed,why,clean:perfect,frames:A.frames,T:A.T,sim:!!A.sim};
 }
 
 /* ---------- Test-Trick (ohne Sensoren) ---------- */
 function simTrick(){
  if(!D.armed||D.st!=='ground'){setStatus(D.armed?'Moment …':'Erst „Bereit“ tippen');return}
  initAudio();G.simUsed=true;
- const O=[[0,1,0],[0,-1,0],[0,0,.5],[0,0,-.5],[0,0,1],[0,1,.5],[0,1,1],[0,-1,1],[1,0,0],[-1,0,0],[0,2,0],[1,1,0],[0,-1,-.5],[0,0,2],[0,2,1],[0,0,0]];
+ const O=[[0,1,0],[0,-1,0],[0,0,.5],[0,0,-.5],[0,0,1],[0,1,.5],[0,1,1],[0,-1,1],[1,0,0],[-1,0,0],[0,2,0],[1,1,0],[0,-1,-.5],[0,0,2],[0,2,1],[0,0,0],[0,.5,0],[.5,0,0]];
  const o=O[Math.random()*O.length|0],T=.35+Math.random()*.35,st=.01,g0=[0,0,-9.81];
  D.g=g0.slice();let t=now();const w=o.map(v=>v*360/T+(Math.random()-.5)*20);
  for(let i=0;i<5;i++)process(t+=st,...g0,0,0,0);
@@ -332,19 +344,19 @@ function simTrick(){
  if(th>1e-9){const s=Math.sin(th/2)/th;q=[Math.cos(th/2),x*s,y*s,z*s]}
  const r=rmat(q),ge=[0,1,2].map(j=>r[0][j]*g0[0]+r[1][j]*g0[1]+r[2][j]*g0[2]);
  for(let i=0;i<3;i++)process(t+=st,0,0,20,0,0,0);
- for(let i=0;i<40;i++)process(t+=st,...ge,0,0,0);
+ for(let i=0;i<60;i++)process(t+=st,...ge,(Math.random()-.5)*8,(Math.random()-.5)*8,(Math.random()-.5)*8);
  D.lastT=now();
 }
 
 /* ---------- Spiel-Logik ---------- */
 const G={mode:'jam',score:0,combo:null,run:null,stats:null,simUsed:false,players:[],pi:0,sk:null,again:null};
-const newStats=()=>({tricks:0,best:null,longest:0,maxAir:0,maxRot:0});
+const newStats=()=>({tricks:0,bails:0,best:null,longest:0,maxAir:0,maxRot:0});
 let rp=null;
 function setStatus(s){$('status').textContent=s}
 function readyText(){return G.mode==='skate'?$('status').textContent:'Bereit – wirf!'}
 function popName(name,pts,clean,toss){
  const n=$('tName'),p=$('tPts');n.textContent=name;p.textContent=pts||'';n.classList.toggle('toss',!!toss);
- $('tClean').innerHTML=clean?'<span class="clean">Clean Catch</span>':'';
+ $('tClean').innerHTML=clean?'<span class="clean">Perfect Catch</span>':'';
  const pop=$('pop');pop.classList.remove('go');void pop.offsetWidth;pop.classList.add('go');
 }
 function flash(s){const f=$('flash');f.textContent=s;f.classList.remove('go2');void f.offsetWidth;f.classList.add('go2')}
@@ -365,8 +377,14 @@ function noteRecords(tr){
 function onTrick(tr){
  rp={f:tr.frames,T:Math.max(tr.T,.05),start:now(),speed:.45};
  showFacts(tr);
- if(tr.name!=='Toss')noteRecords(tr);
- if(G.mode==='skate')return skateTrick(tr);
+ const bail=tr.name!=='Toss'&&!tr.landed&&cfg.strict;
+ if(tr.name!=='Toss'&&!bail)noteRecords(tr);
+ if(G.mode==='skate')return skateTrick(tr,bail);
+ if(bail){
+  popName(tr.name,'Bail! '+tr.why,false,true);sfx.toss();G.stats.bails++;
+  if(G.combo){const lost=G.combo.pts*G.combo.names.length;G.combo=null;renderCombo();if(lost)flash('Combo weg: −'+fmt(lost))}
+  setStatus('Bereit – wirf!');return;
+ }
  if(tr.name==='Toss'){popName('Toss','kein Trick',false,true);sfx.toss();bankCombo();setStatus('Bereit – wirf!');return}
  const st=G.stats;st.tricks++;if(!st.best||tr.pts>st.best.pts)st.best={name:tr.name,pts:tr.pts};st.maxAir=Math.max(st.maxAir,tr.air);st.maxRot=Math.max(st.maxRot,tr.rot);
  if(!G.combo)G.combo={names:[],pts:0,sim:false};
@@ -410,7 +428,7 @@ function startRun(sec,onEnd){
 }
 function endRun(){const r=G.run;G.run=null;D.armed=false;bankCombo();r.onEnd({score:G.score,stats:G.stats,sim:G.simUsed})}
 function statRows(st){
- return `<div class="rr">Tricks<span>${st.tricks}</span></div><div class="rr">Bester Trick<span>${st.best?esc(st.best.name)+' · '+fmt(st.best.pts):'–'}</span></div><div class="rr">Längste Combo<span>${st.longest}×</span></div><div class="rr">Max Airtime<span>${dec(st.maxAir)} s</span></div><div class="rr">Max Rotation<span>${fmt(st.maxRot)}°</span></div>`;
+ const q=st.tricks+st.bails;return `<div class="rr">Gelandet<span>${st.tricks} von ${q}${q?' ('+Math.round(st.tricks/q*100)+' %)':''}</span></div><div class="rr">Bester Trick<span>${st.best?esc(st.best.name)+' · '+fmt(st.best.pts):'–'}</span></div><div class="rr">Längste Combo<span>${st.longest}×</span></div><div class="rr">Max Airtime<span>${dec(st.maxAir)} s</span></div><div class="rr">Max Rotation<span>${fmt(st.maxRot)}°</span></div>`;
 }
 function results(title,html,again){$('resT').textContent=title;$('resB').innerHTML=html;G.again=again;show('res')}
 $('resA').onclick=()=>{initAudio();G.again&&G.again()};
@@ -446,14 +464,14 @@ function skPrompt(){
  if(s.phase==='set')overlay(a.name+' legt vor','Lande einen Trick. '+b.name+' muss ihn danach genau so nachmachen.','Bereit',()=>{D.armed=true;popName('Vorlegen!','');setStatus(a.name+': Trick vorlegen');wake()});
  else overlay(b.name+', mach nach:',s.target,'Bereit',()=>{D.armed=true;popName(s.target,'nachmachen');setStatus(b.name+': '+s.target+' nachmachen')});
 }
-function skateTrick(tr){
+function skateTrick(tr,bail){
  const s=G.sk,a=s.p[s.setter],b=s.p[1-s.setter];D.armed=false;setStatus('');
  if(s.phase==='set'){
-  if(tr.name==='Toss'){popName('Toss','verkackt – Wechsel',false,true);sfx.toss();s.setter=1-s.setter;setTimeout(skPrompt,1500);return}
+  if(tr.name==='Toss'||bail){popName(tr.name,(bail?'Bail! '+tr.why:'kein Trick')+' – Wechsel',false,true);sfx.toss();s.setter=1-s.setter;setTimeout(skPrompt,1500);return}
   s.target=tr.name;s.phase='match';popName(tr.name,'vorgelegt');sfx.land(1);speak(tr.name);setTimeout(skPrompt,1700);return;
  }
- if(tr.name===s.target){popName(tr.name,'gestanden!',tr.clean);sfx.bank();speak(tr.name)}
- else{b.l++;popName(tr.name,'falsch → '+'SKATE'.slice(0,b.l),false,true);sfx.toss()}
+ if(tr.name===s.target&&!bail){popName(tr.name,'gestanden!',tr.clean);sfx.bank();speak(tr.name)}
+ else{b.l++;popName(tr.name,(bail?'Bail → ':'falsch → ')+'SKATE'.slice(0,b.l),false,true);sfx.toss()}
  s.phase='set';s.target=null;renderSkate();
  if(b.l>=5)return setTimeout(()=>results(a.name+' gewinnt!',s.p.map(p=>`<div class="rr">${esc(p.name)}<span class="lt">${'SKATE'.slice(0,p.l)||'–'}</span></div>`).join(''),()=>goSkate(s.p.map(p=>p.name))),1700);
  setTimeout(skPrompt,1700);
@@ -491,7 +509,7 @@ function renderHs(){
 function seg(id,val,on){const el=$(id);const paint=v=>el.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.v==String(v)));paint(val);el.onclick=e=>{const b=e.target.closest('button');if(!b)return;on(b.dataset.v);paint(b.dataset.v);saveCfg()}}
 function renderSet(){
  $('sName').value=cfg.name;$('sName').oninput=e=>{cfg.name=e.target.value.trim()||'Spieler 1';saveCfg()};
- seg('sStance',cfg.stance,v=>cfg.stance=+v);seg('sVoice',cfg.voice?1:0,v=>cfg.voice=v==='1');seg('sSound',cfg.sound?1:0,v=>cfg.sound=v==='1');
+ seg('sStance',cfg.stance,v=>cfg.stance=+v);seg('sStrict',cfg.strict?1:0,v=>cfg.strict=v==='1');seg('sVoice',cfg.voice?1:0,v=>cfg.voice=v==='1');seg('sSound',cfg.sound?1:0,v=>cfg.sound=v==='1');
  seg('sDebug',cfg.debug?1:0,v=>{cfg.debug=v==='1';$('debug').classList.toggle('on',cfg.debug)});
  const rf=$('sFree'),rc=$('sCatch');rf.value=cfg.freeA;rc.value=cfg.catchA;
  const lab=()=>{$('vFree').textContent=dec(cfg.freeA,2)+' m/s²';$('vCatch').textContent=dec(cfg.catchA,1)+' m/s²'};lab();
@@ -520,7 +538,8 @@ function tick(){
  }else{phone.style.transform=`translateY(${(Math.sin(t*2)*4).toFixed(1)}px) rotateY(${(Math.sin(t*.8)*18).toFixed(1)}deg)`}
  if(G.combo){const left=G.combo.deadline-t;$('cBar').style.width=Math.max(0,left/COMBO_WIN*100)+'%';if(left<=0&&D.st==='ground')bankCombo()}
  if(G.run){const left=G.run.end-t,s=Math.max(0,Math.ceil(left));if(s!==G.run.last){G.run.last=s;$('pTime').textContent=s;if(s<=3&&s>0)sfx.tick()}if(left<=0&&D.st==='ground')endRun()}
- if(cfg.debug)$('debug').textContent=`|a| ${D.a.toFixed(2)} m/s²   |ω| ${D.w.toFixed(0)} °/s\nstate ${D.st}   armed ${D.armed}   sensor ${D.got?'ok':'–'}\nfree < ${cfg.freeA}   catch > ${cfg.catchA}   peak ${D.peak.toFixed(1)}`;
+ if(cfg.debug)$('debug').textContent=`|a| ${D.a.toFixed(2)} m/s²   |ω| ${D.w.toFixed(0)} °/s\nstate ${D.st}   armed ${D.armed}   sensor ${D.got?'ok':'–'}\nfree < ${cfg.freeA}   catch > ${cfg.catchA}   peak ${D.peak.toFixed(1)}
+letzter Fang: Lage ${D.lastDot==null?'–':D.lastDot.toFixed(2)} (≥0,80 = gelandet)   Zittern ${D.lastW==null?'–':D.lastW.toFixed(1)} °/s (<1,5 = liegt)`;
  requestAnimationFrame(tick);
 }
 requestAnimationFrame(tick);
